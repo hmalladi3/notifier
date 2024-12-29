@@ -45,27 +45,20 @@ func NewNotificationServer(conn *dbus.Conn) *NotificationServer {
 func (n *NotificationServer) Notify(appName string, replacesID uint32, icon string, summary string, body string, actions []string, hints map[string]dbus.Variant, expireTimeout int32) (uint32, *dbus.Error) {
 	// Check if this is a Twitter/X notification
 	if strings.Contains(body, "x.com") {
-		// Extract the actual message text
-		parts := strings.Split(body, "\n\n")
+		// Print to terminal for debugging
+		fmt.Printf("\n[DEBUG] Raw notification body:\n%s\n", body)
+
+		// Find the content after x.com link
+		parts := strings.Split(body, "</a>\n\n")
 		if len(parts) >= 2 {
-			messageText := parts[len(parts)-1]
+			messageText := strings.TrimSpace(parts[1])
 			// Print to terminal
 			fmt.Printf("[TWITTER] %s\n", messageText)
 			// Send to broadcast channel
 			n.broadcast <- messageText
 		}
 	} else {
-		fmt.Printf("\nNEW NOTIFICATION\n")
-		fmt.Printf("App: %s\n", appName)
-		fmt.Printf("Summary: %s\n", summary)
-		fmt.Printf("Body: %s\n", body)
-		fmt.Printf("Icon: %s\n", icon)
-		if len(hints) > 0 {
-			fmt.Printf("Hints:\n")
-			for k, v := range hints {
-				fmt.Printf("  %s: %v\n", k, v.Value())
-			}
-		}
+		// Debug: print other notifications
 		fmt.Printf("Other notification from %s: %s\n", appName, body)
 	}
 	return 1, nil
