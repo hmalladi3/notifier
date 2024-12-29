@@ -43,12 +43,14 @@ func NewNotificationServer(conn *dbus.Conn) *NotificationServer {
 
 // Implementation of the Notify method that dunst calls
 func (n *NotificationServer) Notify(appName string, replacesID uint32, icon string, summary string, body string, actions []string, hints map[string]dbus.Variant, expireTimeout int32) (uint32, *dbus.Error) {
-	// Check if this is a Discord notification
-	if strings.Contains(body, "discord.com") {
+	// Check if this is a Twitter/X notification
+	if strings.Contains(body, "x.com") {
 		// Extract the actual message text
 		parts := strings.Split(body, "\n\n")
 		if len(parts) >= 2 {
 			messageText := parts[len(parts)-1]
+			// Print to terminal
+			fmt.Printf("[TWITTER] %s\n", messageText)
 			// Send to broadcast channel
 			n.broadcast <- messageText
 		}
@@ -64,6 +66,7 @@ func (n *NotificationServer) Notify(appName string, replacesID uint32, icon stri
 				fmt.Printf("  %s: %v\n", k, v.Value())
 			}
 		}
+		fmt.Printf("Other notification from %s: %s\n", appName, body)
 	}
 	return 1, nil
 }
@@ -79,13 +82,18 @@ func (n *NotificationServer) handleWebSocket(w http.ResponseWriter, r *http.Requ
 	// Register new client
 	n.mutex.Lock()
 	n.clients[conn] = true
+	clientCount := len(n.clients)
 	n.mutex.Unlock()
+	
+	fmt.Printf("New WebSocket client connected (total clients: %d)\n", clientCount)
 
 	// Remove client when connection closes
 	defer func() {
 		n.mutex.Lock()
 		delete(n.clients, conn)
+		clientCount := len(n.clients)
 		n.mutex.Unlock()
+		fmt.Printf("WebSocket client disconnected (remaining clients: %d)\n", clientCount)
 	}()
 
 	// Keep connection alive
@@ -101,6 +109,10 @@ func (n *NotificationServer) handleWebSocket(w http.ResponseWriter, r *http.Requ
 func (n *NotificationServer) broadcastMessages() {
 	for message := range n.broadcast {
 		n.mutex.Lock()
+		clientCount := len(n.clients)
+		if clientCount > 0 {
+			fmt.Printf("Broadcasting to %d clients...\n", clientCount)
+		}
 		for client := range n.clients {
 			err := client.WriteMessage(websocket.TextMessage, []byte(message))
 			if err != nil {
