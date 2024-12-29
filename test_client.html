@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Discord Notification Test Client</title>
+    <style>
+        #messages {
+            height: 400px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin: 10px 0;
+        }
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            border-bottom: 1px solid #eee;
+        }
+    </style>
+</head>
+<body>
+    <h2>Discord Notifications</h2>
+    <div id="messages"></div>
+
+    <script>
+        const messagesDiv = document.getElementById('messages');
+        const ws = new WebSocket('ws://localhost:8080/ws');
+
+        ws.onopen = function() {
+            appendMessage('Connected to notification server');
+        };
+
+        ws.onmessage = function(event) {
+            appendMessage(event.data);
+        };
+
+        ws.onclose = function() {
+            appendMessage('Disconnected from server');
+        };
+
+        function appendMessage(text) {
+            const div = document.createElement('div');
+            div.className = 'message';
+            div.textContent = text;
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+    </script>
+</body>
+</html>
