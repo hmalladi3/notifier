@@ -1,44 +1,68 @@
-package main
+package notifier
 
 import (
 	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
 	"strings"
-	"sync"
-	"syscall"
 
 	"github.com/godbus/dbus/v5"
-	"github.com/gorilla/websocket"
 )
 
 const (
 	dbusInterface = "org.freedesktop.Notifications"
 	dbusPath      = "/org/freedesktop/Notifications"
-	wsPort        = ":8080"
 )
 
-var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool {
-		return true // Allow all connections for testing
-	},
-}
+// NotificationHandler is a callback function type for handling notifications
+type NotificationHandler func(message string)
 
 type NotificationServer struct {
 	conn     *dbus.Conn
-	clients  map[*websocket.Conn]bool
-	mutex    sync.Mutex
-	broadcast chan string
+	handlers []NotificationHandler
 }
 
-func NewNotificationServer(conn *dbus.Conn) *NotificationServer {
-	return &NotificationServer{
-		conn:      conn,
-		clients:   make(map[*websocket.Conn]bool),
-		broadcast: make(chan string),
+// NewNotificationServer creates a new notification server instance
+func NewNotificationServer() (*NotificationServer, error) {
+	conn, err := dbus.ConnectSessionBus()
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to session bus: %v", err)
 	}
+
+	server := &NotificationServer{
+		conn:     conn,
+		handlers: make([]NotificationHandler, 0),
+	}
+
+	return server, nil
+}
+
+// OnNotification registers a handler function that will be called for each notification
+func (n *NotificationServer) OnNotification(handler NotificationHandler) {
+	n.handlers = append(n.handlers, handler)
+}
+
+// Start initializes the notification server and starts listening for notifications
+func (n *NotificationServer) Start() error {
+	if err := n.conn.Export(n, dbusPath, dbusInterface); err != nil {
+		return fmt.Errorf("failed to export notification server: %v", err)
+	}
+
+	reply, err := n.conn.RequestName(dbusInterface, dbus.NameFlagDoNotQueue)
+	if err != nil {
+		return fmt.Errorf("failed to request name: %v", err)
+	}
+	if reply != dbus.RequestNameReplyPrimaryOwner {
+		return fmt.Errorf("name already taken")
+	}
+
+	return nil
+}
+
+// Stop gracefully shuts down the notification server
+func (n *NotificationServer) Stop() error {
+	if err := n.conn.Close(); err != nil {
+		return fmt.Errorf("failed to close dbus connection: %v", err)
+	}
+	return nil
 }
 
 // Implementation of the Notify method that dunst calls
@@ -54,118 +78,15 @@ func (n *NotificationServer) Notify(appName string, replacesID uint32, icon stri
 			messageText := strings.TrimSpace(parts[1])
 			// Print to terminal
 			fmt.Printf("[TWITTER] %s\n", messageText)
-			// Send to broadcast channel
-			n.broadcast <- messageText
+
+			// Call all registered handlers
+			for _, handler := range n.handlers {
+				handler(messageText)
+			}
 		}
 	} else {
 		// Debug: print other notifications
 		fmt.Printf("Other notification from %s: %s\n", appName, body)
 	}
 	return 1, nil
-}
-
-func (n *NotificationServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	conn, err := upgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("WebSocket upgrade failed: %v", err)
-		return
-	}
-	defer conn.Close()
-
-	// Register new client
-	n.mutex.Lock()
-	n.clients[conn] = true
-	clientCount := len(n.clients)
-	n.mutex.Unlock()
-	
-	fmt.Printf("New WebSocket client connected (total clients: %d)\n", clientCount)
-
-	// Remove client when connection closes
-	defer func() {
-		n.mutex.Lock()
-		delete(n.clients, conn)
-		clientCount := len(n.clients)
-		n.mutex.Unlock()
-		fmt.Printf("WebSocket client disconnected (remaining clients: %d)\n", clientCount)
-	}()
-
-	// Keep connection alive
-	for {
-		// Read messages from client (if any)
-		_, _, err := conn.ReadMessage()
-		if err != nil {
-			break
-		}
-	}
-}
-
-func (n *NotificationServer) broadcastMessages() {
-	for message := range n.broadcast {
-		n.mutex.Lock()
-		clientCount := len(n.clients)
-		if clientCount > 0 {
-			fmt.Printf("Broadcasting to %d clients...\n", clientCount)
-		}
-		for client := range n.clients {
-			err := client.WriteMessage(websocket.TextMessage, []byte(message))
-			if err != nil {
-				log.Printf("Failed to send message to client: %v", err)
-				client.Close()
-				delete(n.clients, client)
-			}
-		}
-		n.mutex.Unlock()
-	}
-}
-
-func main() {
-	// Connect to the session bus
-	conn, err := dbus.SessionBus()
-	if err != nil {
-		log.Fatal("Failed to connect to session bus:", err)
-	}
-	defer conn.Close()
-
-	// Create our notification server
-	server := NewNotificationServer(conn)
-
-	// Export the notification server on the bus
-	err = conn.Export(server, dbus.ObjectPath(dbusPath), dbusInterface)
-	if err != nil {
-		log.Fatal("Failed to export server:", err)
-	}
-
-	// Request the notification service name
-	reply, err := conn.RequestName(dbusInterface,
-		dbus.NameFlagDoNotQueue)
-	if err != nil {
-		log.Fatal("Failed to request name:", err)
-	}
-	if reply != dbus.RequestNameReplyPrimaryOwner {
-		log.Fatal("Name already taken. Is another notification daemon running?")
-	}
-
-	// Start WebSocket server
-	http.HandleFunc("/ws", server.handleWebSocket)
-	go func() {
-		log.Printf("Starting WebSocket server on %s", wsPort)
-		if err := http.ListenAndServe(wsPort, nil); err != nil {
-			log.Fatal("WebSocket server failed:", err)
-		}
-	}()
-
-	// Start broadcasting messages
-	go server.broadcastMessages()
-
-	fmt.Printf("Notification listener running...\n")
-	fmt.Printf("WebSocket server running on ws://localhost%s/ws\n", wsPort)
-	fmt.Printf("Press Ctrl+C to exit\n")
-
-	// Wait for interrupt signal
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
-
-	fmt.Println("\nShutting down...")
-	close(server.broadcast)
 }

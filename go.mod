@@ -1,4 +1,4 @@
-module xtradebot/notifier
+module github.com/hmalladi3/notifier
 
 go 1.21
 
