@@ -35,6 +35,27 @@ The WebSocket implementation (`websocket-version` branch) provides network-based
 - Suitable for distributed systems and web applications
 - Real-time notification delivery over network
 
+## Prerequisites
+
+### System Dependencies
+- `libnotify` (libnotify-dev on Debian/Ubuntu)
+- `dbus`
+- `glib2`
+
+### Running the Application
+Before using this library, ensure that no other notification daemons are running. You'll need to stop:
+- `dunst`
+- `notify-osd`
+- Any other notification daemon that might be running
+
+You can stop these processes using:
+```bash
+killall dunst
+killall notify-osd
+```
+
+Note: After stopping your application, you might want to restart your notification daemon (e.g., `dunst &`) to restore system notifications.
+
 ## Architecture
 
 ### Direct Notification Version
@@ -101,3 +122,5 @@ Check the `examples` directory for implementation examples of both versions.
 To use the WebSocket version, switch to the `websocket-version` branch:
 ```bash
 git checkout websocket-version
+
+```
