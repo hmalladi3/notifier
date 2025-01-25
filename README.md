@@ -1,6 +1,6 @@
 # Notifier
 
-A Go library for handling system notifications with multiple implementation options.
+A Go library for handling linux system notifications to import as a library or broadcast as a websocket.
 
 ## Implementations
 
