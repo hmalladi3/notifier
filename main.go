@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -26,41 +27,111 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+type Subscription struct {
+	URLPattern     string `json:"url_pattern"`
+	SummaryPattern string `json:"summary_pattern,omitempty"`
+}
+
+type Client struct {
+	conn          *websocket.Conn
+	subscriptions []Subscription
+}
+
+type NotificationData struct {
+	AppName       string                 `json:"app_name"`
+	ID           uint32                 `json:"id"`
+	Icon         string                 `json:"icon"`
+	Summary      string                 `json:"summary"`
+	Body         string                 `json:"body"`
+	Actions      []string               `json:"actions"`
+	Hints        map[string]interface{} `json:"hints"`
+	ExpireTimeout int32                 `json:"expire_timeout"`
+}
+
 type NotificationServer struct {
-	conn     *dbus.Conn
-	clients  map[*websocket.Conn]bool
-	mutex    sync.Mutex
+	conn      *dbus.Conn
+	clients   map[*websocket.Conn]*Client
+	mutex     sync.Mutex
 	broadcast chan string
+}
+
+type WSMessage struct {
+	Type    string      `json:"type"`    // "subscribe" or "unsubscribe"
+	Payload Subscription `json:"payload"`
 }
 
 func NewNotificationServer(conn *dbus.Conn) *NotificationServer {
 	return &NotificationServer{
 		conn:      conn,
-		clients:   make(map[*websocket.Conn]bool),
+		clients:   make(map[*websocket.Conn]*Client),
 		broadcast: make(chan string),
 	}
 }
 
 // Implementation of the Notify method that dunst calls
 func (n *NotificationServer) Notify(appName string, replacesID uint32, icon string, summary string, body string, actions []string, hints map[string]dbus.Variant, expireTimeout int32) (uint32, *dbus.Error) {
-	// Check if this is a Twitter/X notification
-	if strings.Contains(body, "x.com") {
-		// Print to terminal for debugging
-		fmt.Printf("\n[DEBUG] Raw notification body:\n%s\n", body)
+	// Debug: Print all notification details
+	fmt.Printf("\n[DBUS NOTIFICATION DETAILS]\n"+
+		"Application: %s\n"+
+		"ID: %d\n"+
+		"Icon: %s\n"+
+		"Summary: %s\n"+
+		"Body: %s\n"+
+		"Actions: %v\n"+
+		"Hints: %v\n"+
+		"Timeout: %d\n",
+		appName, replacesID, icon, summary, body, actions, hints, expireTimeout)
 
-		// Find the content after x.com link
-		parts := strings.Split(body, "</a>\n\n")
-		if len(parts) >= 2 {
-			messageText := strings.TrimSpace(parts[1])
-			// Print to terminal
-			fmt.Printf("[TWITTER] %s\n", messageText)
-			// Send to broadcast channel
-			n.broadcast <- messageText
-		}
-	} else {
-		// Debug: print other notifications
-		fmt.Printf("Other notification from %s: %s\n", appName, body)
+	// Convert hints to a map[string]interface{}
+	hintsMap := make(map[string]interface{})
+	for k, v := range hints {
+		hintsMap[k] = v.Value()
 	}
+
+	// Create notification data
+	notif := NotificationData{
+		AppName:       appName,
+		ID:           replacesID,
+		Icon:         icon,
+		Summary:      summary,
+		Body:         body,
+		Actions:      actions,
+		Hints:        hintsMap,
+		ExpireTimeout: expireTimeout,
+	}
+
+	// Marshal notification to JSON
+	notifJSON, err := json.Marshal(notif)
+	if err != nil {
+		log.Printf("Failed to marshal notification: %v", err)
+		return 1, nil
+	}
+
+	// Send to subscribed clients
+	n.mutex.Lock()
+	for _, client := range n.clients {
+		// Check each subscription
+		for _, sub := range client.subscriptions {
+			if strings.Contains(body, sub.URLPattern) {
+				// If summary pattern is specified, check it
+				if sub.SummaryPattern != "" {
+					if !strings.Contains(summary, sub.SummaryPattern) {
+						continue
+					}
+				}
+				// Send notification
+				err := client.conn.WriteMessage(websocket.TextMessage, notifJSON)
+				if err != nil {
+					log.Printf("Failed to send message to client: %v", err)
+					client.conn.Close()
+					delete(n.clients, client.conn)
+				}
+				break // Don't send multiple times to same client
+			}
+		}
+	}
+	n.mutex.Unlock()
+
 	return 1, nil
 }
 
@@ -74,7 +145,7 @@ func (n *NotificationServer) handleWebSocket(w http.ResponseWriter, r *http.Requ
 
 	// Register new client
 	n.mutex.Lock()
-	n.clients[conn] = true
+	n.clients[conn] = &Client{conn: conn}
 	clientCount := len(n.clients)
 	n.mutex.Unlock()
 	
@@ -92,9 +163,38 @@ func (n *NotificationServer) handleWebSocket(w http.ResponseWriter, r *http.Requ
 	// Keep connection alive
 	for {
 		// Read messages from client (if any)
-		_, _, err := conn.ReadMessage()
+		_, message, err := conn.ReadMessage()
 		if err != nil {
 			break
+		}
+
+		var wsMessage WSMessage
+		err = json.Unmarshal(message, &wsMessage)
+		if err != nil {
+			log.Printf("Failed to unmarshal message: %v", err)
+			continue
+		}
+
+		switch wsMessage.Type {
+		case "subscribe":
+			n.mutex.Lock()
+			client := n.clients[conn]
+			client.subscriptions = append(client.subscriptions, wsMessage.Payload)
+			n.mutex.Unlock()
+			log.Printf("Client subscribed to %s\n", wsMessage.Payload.URLPattern)
+		case "unsubscribe":
+			n.mutex.Lock()
+			client := n.clients[conn]
+			for i, subscription := range client.subscriptions {
+				if subscription.URLPattern == wsMessage.Payload.URLPattern {
+					client.subscriptions = append(client.subscriptions[:i], client.subscriptions[i+1:]...)
+					break
+				}
+			}
+			n.mutex.Unlock()
+			log.Printf("Client unsubscribed from %s\n", wsMessage.Payload.URLPattern)
+		default:
+			log.Printf("Unknown message type: %s\n", wsMessage.Type)
 		}
 	}
 }

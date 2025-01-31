@@ -1,46 +1,94 @@
 # Notifier
 
-listens to dbus notifications from dunst and broadcasts them to websocket clients
+A D-Bus notification server that broadcasts filtered notifications to WebSocket clients. Supports pattern-based subscriptions for URLs and notification summaries.
 
-## Low Latency Architecture
+## Architecture
 
-The program uses multiple goroutines to achieve low latency:
+The program uses multiple goroutines and a subscription-based model:
 
 1. **Main Goroutine**
    - Handles D-Bus notification server setup
    - Listens for system signals (Ctrl+C)
    - Blocks until shutdown signal received
 
-2. **WebSocket Server Goroutine**
-   ```go
-   go func() {
-       log.Printf("Starting WebSocket server on %s", wsPort)
-       if err := http.ListenAndServe(wsPort, nil); err != nil {
-           log.Fatal("WebSocket server failed:", err)
-       }
-   }()
-   ```
-   - Runs HTTP server for WebSocket connections
-   - Accepts new client connections without blocking main thread
-   - Each client connection gets its own goroutine for handling messages
+2. **WebSocket Server**
+   - Accepts client connections
+   - Handles subscription/unsubscription requests
+   - Each client can subscribe to multiple notification patterns
 
-3. **Broadcast Goroutine**
-   ```go
-   go server.broadcastMessages()
-   ```
-   - Dedicated goroutine for message broadcasting
-   - Listens to broadcast channel continuously
-   - Distributes messages to all connected clients
-   - Channel-based communication prevents blocking between notification receipt and broadcasting
+3. **Client Management**
+   - Thread-safe client tracking
+   - Pattern-based notification filtering
+   - Full notification data forwarding
 
-### Data Flow
+## WebSocket Protocol
+
+### Subscribe to Notifications
+```json
+{
+  "type": "subscribe",
+  "payload": {
+    "url_pattern": "x.com",
+    "summary_pattern": "optional pattern"  // Optional
+  }
+}
+```
+
+### Unsubscribe from Notifications
+```json
+{
+  "type": "unsubscribe",
+  "payload": {
+    "url_pattern": "x.com"
+  }
+}
+```
+
+### Notification Format
+Clients receive complete notification data:
+```json
+{
+  "app_name": "Firefox",
+  "id": 123,
+  "icon": "icon-path",
+  "summary": "New Message",
+  "body": "https://x.com/...",
+  "actions": ["default"],
+  "hints": {"urgency": 1},
+  "expire_timeout": 5000
+}
+```
+
+## Features
+- **Pattern-Based Filtering**: Subscribe to notifications containing specific URLs
+- **Optional Summary Filtering**: Further filter by notification summary text
+- **Complete Notification Data**: Receive all notification fields, not just the body
+- **Multiple Subscriptions**: Each client can have multiple active subscriptions
+- **Real-time Updates**: Instant notification delivery to subscribed clients
+- **Thread-Safe**: Concurrent client and subscription management
+
+## Data Flow
 1. D-Bus notification arrives → `Notify` method called
-2. Message extracted and sent to broadcast channel (non-blocking)
-3. Broadcast goroutine picks up message from channel
-4. Message distributed to all WebSocket clients in parallel
+2. Notification converted to JSON format
+3. Pattern matching against client subscriptions
+4. Filtered notifications sent to matching clients
 
-This architecture ensures:
-- Notifications are processed immediately
-- Broadcasting doesn't block new notifications
-- Client connections don't affect notification processing
-- System remains responsive under load
+## Usage Example
+```javascript
+// Connect to WebSocket
+const ws = new WebSocket('ws://localhost:8080/ws');
+
+// Subscribe to Twitter notifications
+ws.send(JSON.stringify({
+  type: 'subscribe',
+  payload: {
+    url_pattern: 'x.com',
+    summary_pattern: 'New Tweet'  // Optional
+  }
+}));
+
+// Handle incoming notifications
+ws.onmessage = (event) => {
+  const notification = JSON.parse(event.data);
+  console.log('Received notification:', notification);
+};
