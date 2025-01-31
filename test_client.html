@@ -1,24 +1,70 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Discord Notification Test Client</title>
+    <title>Notification Test Client</title>
     <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 0 20px;
+        }
         #messages {
             height: 400px;
             overflow-y: auto;
             border: 1px solid #ccc;
             padding: 10px;
             margin: 10px 0;
+            background: #f9f9f9;
         }
         .message {
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: white;
+        }
+        .message pre {
+            white-space: pre-wrap;
             margin: 5px 0;
-            padding: 5px;
-            border-bottom: 1px solid #eee;
+        }
+        .controls {
+            margin: 20px 0;
+            padding: 15px;
+            background: #f5f5f5;
+            border-radius: 4px;
+        }
+        button {
+            padding: 8px 15px;
+            margin: 5px;
+            cursor: pointer;
+        }
+        input[type="text"] {
+            padding: 8px;
+            width: 200px;
+            margin: 5px;
+        }
+        .error {
+            color: red;
+        }
+        .success {
+            color: green;
         }
     </style>
 </head>
 <body>
-    <h2>Discord Notifications</h2>
+    <h2>Notification Test Client</h2>
+    
+    <div class="controls">
+        <h3>Subscribe to Notifications</h3>
+        <div>
+            <input type="text" id="urlPattern" placeholder="URL Pattern (e.g., x.com)" value="x.com">
+            <input type="text" id="summaryPattern" placeholder="Summary Pattern (optional)">
+            <button onclick="subscribe()">Subscribe</button>
+            <button onclick="unsubscribe()">Unsubscribe</button>
+        </div>
+    </div>
+
     <div id="messages"></div>
 
     <script>
@@ -26,20 +72,86 @@
         const ws = new WebSocket('ws://localhost:8080/ws');
 
         ws.onopen = function() {
-            appendMessage('Connected to notification server');
+            appendMessage('Connected to notification server', 'success');
         };
 
         ws.onmessage = function(event) {
-            appendMessage(event.data);
+            try {
+                const notification = JSON.parse(event.data);
+                displayNotification(notification);
+            } catch (e) {
+                appendMessage('Error parsing notification: ' + e.message, 'error');
+            }
         };
 
         ws.onclose = function() {
-            appendMessage('Disconnected from server');
+            appendMessage('Disconnected from server', 'error');
         };
 
-        function appendMessage(text) {
+        function subscribe() {
+            const urlPattern = document.getElementById('urlPattern').value.trim();
+            const summaryPattern = document.getElementById('summaryPattern').value.trim();
+            
+            if (!urlPattern) {
+                appendMessage('URL pattern is required', 'error');
+                return;
+            }
+
+            const subscription = {
+                type: 'subscribe',
+                payload: {
+                    url_pattern: urlPattern
+                }
+            };
+
+            if (summaryPattern) {
+                subscription.payload.summary_pattern = summaryPattern;
+            }
+
+            ws.send(JSON.stringify(subscription));
+            appendMessage(`Subscribed to: ${urlPattern}${summaryPattern ? ' with summary: ' + summaryPattern : ''}`, 'success');
+        }
+
+        function unsubscribe() {
+            const urlPattern = document.getElementById('urlPattern').value.trim();
+            
+            if (!urlPattern) {
+                appendMessage('URL pattern is required', 'error');
+                return;
+            }
+
+            const unsubscription = {
+                type: 'unsubscribe',
+                payload: {
+                    url_pattern: urlPattern
+                }
+            };
+
+            ws.send(JSON.stringify(unsubscription));
+            appendMessage(`Unsubscribed from: ${urlPattern}`, 'success');
+        }
+
+        function displayNotification(notification) {
             const div = document.createElement('div');
             div.className = 'message';
+            
+            const content = `
+                <strong>Application:</strong> ${notification.app_name}
+                <br><strong>Summary:</strong> ${notification.summary}
+                <br><strong>Body:</strong> <pre>${notification.body}</pre>
+                ${notification.actions.length ? `<br><strong>Actions:</strong> ${notification.actions.join(', ')}` : ''}
+                <br><strong>Hints:</strong> <pre>${JSON.stringify(notification.hints, null, 2)}</pre>
+                <br><strong>Expires:</strong> ${notification.expire_timeout}ms
+            `;
+            
+            div.innerHTML = content;
+            messagesDiv.appendChild(div);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function appendMessage(text, type = '') {
+            const div = document.createElement('div');
+            div.className = `message ${type}`;
             div.textContent = text;
             messagesDiv.appendChild(div);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
